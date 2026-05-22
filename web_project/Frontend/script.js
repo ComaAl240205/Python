@@ -1,4 +1,8 @@
-const API_BASE = "http://localhost:8000";
+const API_BASE = (() => {
+  const host = window.location.hostname;
+  const port = "8000";
+  return `http://${host}:${port}`;
+})();
 
 let token = localStorage.getItem("token") || null;
 let currentDocId = null;

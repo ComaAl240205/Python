@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <title>Private Notes</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<!-- Terminal commands to run the project: .venv\Scripts\activate && uvicorn main:app --reload --host 0.0.0.0 -->
+
+<body>
+  <div class="container">
+
+    <header class="topbar">
+      <div>
+        <h1>Private Notes</h1>
+        <p class="sub">Deine eigenen Textdateien – nur für deinen Account.</p>
+      </div>
+      <div class="userbox" id="userBox" style="display:none;">
+        <span id="whoami"></span>
+        <button class="btn ghost" onclick="logout()">Logout</button>
+      </div>
+    </header>
+
+    <!-- AUTH -->
+    <section class="card" id="authCard">
+      <div class="tabs">
+        <button class="tab active" id="tabLogin" onclick="showTab('login')">Login</button>
+        <button class="tab" id="tabRegister" onclick="showTab('register')">Register</button>
+      </div>
+
+      <div id="loginView">
+        <div class="grid2">
+          <div class="field">
+            <label>Username</label>
+            <input id="loginUser" placeholder="z.B. alex" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="loginPass" type="password" placeholder="••••••••" />
+          </div>
+        </div>
+        <button class="btn primary" onclick="login()">Login</button>
+        <p class="hint" id="authMsg"></p>
+      </div>
+
+      <div id="registerView" style="display:none;">
+        <div class="grid2">
+          <div class="field">
+            <label>Username</label>
+            <input id="regUser" placeholder="min. 3 Zeichen" />
+          </div>
+          <div class="field">
+            <label>Password</label>
+            <input id="regPass" type="password" placeholder="min. 6 Zeichen" />
+          </div>
+        </div>
+        <button class="btn primary" onclick="register()">Account erstellen</button>
+        <p class="hint" id="regMsg"></p>
+      </div>
+    </section>
+
+    <!-- APP -->
+    <section class="layout" id="appView" style="display:none;">
+      <aside class="card sidebar">
+        <div class="sidebar-head">
+          <h2>Deine Dateien</h2>
+          <button class="btn small" onclick="newDoc()">+ Neu</button>
+        </div>
+        <div id="docList" class="doclist"></div>
+      </aside>
+
+      <main class="card editor">
+        <div class="editor-head">
+          <input id="docTitle" class="title" placeholder="Titel..." />
+          <div class="actions">
+            <button class="btn ghost" onclick="deleteCurrent()">Löschen</button>
+            <button class="btn primary" onclick="saveCurrent()">Speichern</button>
+          </div>
+        </div>
+
+        <textarea id="docContent" class="content" placeholder="Schreib hier..."></textarea>
+        <p class="hint" id="saveMsg"></p>
+      </main>
+    </section>
+
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

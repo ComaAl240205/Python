@@ -1,4 +1,4 @@
-const API_BASE = "http://10.0.0.7:8000";
+const API_BASE = "http://localhost:8000";
 
 let token = localStorage.getItem("token") || null;
 let currentDocId = null;
@@ -258,3 +258,6 @@ showTab("login");
 if (token) {
   enterApp();
 }
+
+// Touch support for mobile buttons
+document.addEventListener("touchstart", function(){}, true);

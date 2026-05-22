@@ -13,10 +13,14 @@ from database import get_connection, init_db
 
 app = FastAPI()
 
-# CORS
+# CORS - allow frontend ports
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://10.0.0.7:8001",
+        "http://localhost:8001",
+        "*"
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )

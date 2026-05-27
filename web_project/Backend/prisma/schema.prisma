@@ -1,0 +1,80 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+}
+
+model accounts {
+  id            Int      @id @default(autoincrement())
+  username      String   @unique
+  password_hash String
+  created_at    DateTime @default(now())
+
+  documents     documents[]
+  sent_requests friend_requests[] @relation("fr_sender")
+  recv_requests friend_requests[] @relation("fr_receiver")
+  friendships   friendships[] @relation("fs_user")
+  friends_of    friendships[] @relation("fs_friend")
+  sent_messages messages[] @relation("msg_sender")
+  recv_messages messages[] @relation("msg_receiver")
+}
+
+model documents {
+  id         Int      @id @default(autoincrement())
+  owner_id   Int
+  title      String
+  content    String   @default("")
+  updated_at DateTime @updatedAt
+  owner      accounts @relation(fields: [owner_id], references: [id])
+  @@index([owner_id])
+}
+
+model friend_requests {
+  id          Int      @id @default(autoincrement())
+  sender_id   Int
+  receiver_id Int
+  status      String   @default("pending")
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  sender      accounts @relation("fr_sender", fields: [sender_id], references: [id])
+  receiver    accounts @relation("fr_receiver", fields: [receiver_id], references: [id])
+
+  @@unique([sender_id, receiver_id])
+  @@index([receiver_id])
+  @@index([sender_id])
+}
+
+model friendships {
+  id         Int      @id @default(autoincrement())
+  user_id    Int
+  friend_id  Int
+  created_at DateTime @default(now())
+
+  user       accounts @relation("fs_user", fields: [user_id], references: [id])
+  friend     accounts @relation("fs_friend", fields: [friend_id], references: [id])
+
+  @@unique([user_id, friend_id])
+  @@index([user_id])
+  @@index([friend_id])
+}
+
+model messages {
+  id          Int       @id @default(autoincrement())
+  sender_id   Int
+  receiver_id Int
+  content     String
+  created_at  DateTime  @default(now())
+  read_at     DateTime?
+
+  sender      accounts  @relation("msg_sender", fields: [sender_id], references: [id])
+  receiver    accounts  @relation("msg_receiver", fields: [receiver_id], references: [id])
+
+  @@index([receiver_id])
+  @@index([sender_id])
+  @@index([created_at])
+}

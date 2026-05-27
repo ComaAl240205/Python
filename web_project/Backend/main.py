@@ -1,6 +1,6 @@
 import os
 from datetime import datetime, timedelta
-from typing import Set, Dict
+from typing import Dict, Set
 
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,15 +10,28 @@ from pydantic import BaseModel, Field
 from jose import jwt, JWTError
 from passlib.hash import bcrypt_sha256
 
-from database import get_connection, init_db
+from prisma import Prisma
 
+# -------------------------
+# App + Prisma
+# -------------------------
 app = FastAPI()
+prisma = Prisma()
 
-# CORS - allow frontend ports
+@app.on_event("startup")
+async def startup():
+    await prisma.connect()
+
+@app.on_event("shutdown")
+async def shutdown():
+    await prisma.disconnect()
+
+# -------------------------
+# CORS
+# -------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://10.0.0.7:8001",
         "http://localhost:8001",
         "*"
     ],
@@ -26,7 +39,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# WebSocket Manager für Real-Time Chat
+# -------------------------
+# WebSocket Manager
+# -------------------------
 class ConnectionManager:
     def __init__(self):
         self.active_connections: Dict[int, WebSocket] = {}
@@ -37,32 +52,28 @@ class ConnectionManager:
         self.active_connections[user_id] = websocket
 
     def disconnect(self, user_id: int):
-        if user_id in self.active_connections:
-            del self.active_connections[user_id]
-        if user_id in self.user_typing:
-            self.user_typing.discard(user_id)
+        self.active_connections.pop(user_id, None)
+        self.user_typing.discard(user_id)
 
     async def send_personal_message(self, user_id: int, message: dict):
-        if user_id in self.active_connections:
-            await self.active_connections[user_id].send_json(message)
+        ws = self.active_connections.get(user_id)
+        if ws:
+            await ws.send_json(message)
 
-    async def broadcast_to_friend(self, user_id: int, friend_id: int, message: dict):
-        if friend_id in self.active_connections:
-            await self.active_connections[friend_id].send_json(message)
+    async def send_to_friend(self, friend_id: int, message: dict):
+        ws = self.active_connections.get(friend_id)
+        if ws:
+            await ws.send_json(message)
 
 manager = ConnectionManager()
 
-# DB initialisieren
-init_db()
-
 # -------------------------
-# Security / Auth Settings
+# Security / Auth
 # -------------------------
 JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_SUPER_SECRET")
 JWT_ALG = "HS256"
 JWT_EXPIRE_MIN = 60 * 24  # 24h
 
-# Bearer nur 1x (sonst überschreibst du auto_error=False)
 bearer = HTTPBearer(auto_error=False)
 
 def create_access_token(user_id: int, username: str) -> str:
@@ -85,7 +96,7 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # -------------------------
-# Schemas (MÜSSEN VOR ROUTES KOMMEN!)
+# Schemas
 # -------------------------
 class RegisterIn(BaseModel):
     username: str = Field(min_length=3, max_length=30)
@@ -113,249 +124,223 @@ class MessageIn(BaseModel):
 # Auth Routes
 # -------------------------
 @app.post("/register")
-def register(data: RegisterIn):
-    # bcrypt_sha256: löst das 72-byte Problem
+async def register(data: RegisterIn):
     pw_hash = bcrypt_sha256.hash(data.password)
 
-    try:
-        with get_connection() as conn:
-            conn.execute(
-                "INSERT INTO accounts (username, password_hash) VALUES (?, ?)",
-                (data.username, pw_hash)
-            )
-            conn.commit()
-    except Exception:
+    existing = await prisma.accounts.find_unique(where={"username": data.username})
+    if existing:
         raise HTTPException(status_code=400, detail="Username already exists")
 
+    await prisma.accounts.create(
+        data={"username": data.username, "password_hash": pw_hash}
+    )
     return {"status": "registered"}
 
 @app.post("/login")
-def login(data: LoginIn):
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, username, password_hash FROM accounts WHERE username = ?",
-            (data.username,)
-        ).fetchone()
-
+async def login(data: LoginIn):
+    row = await prisma.accounts.find_unique(where={"username": data.username})
     if not row:
         raise HTTPException(status_code=401, detail="Invalid login")
 
-    if not bcrypt_sha256.verify(data.password, row["password_hash"]):
+    if not bcrypt_sha256.verify(data.password, row.password_hash):
         raise HTTPException(status_code=401, detail="Invalid login")
 
-    token = create_access_token(row["id"], row["username"])
+    token = create_access_token(row.id, row.username)
     return {"access_token": token, "token_type": "bearer"}
 
 @app.get("/me")
-def me(user=Depends(get_current_user)):
+async def me(user=Depends(get_current_user)):
     return user
 
 # -------------------------
-# Documents Routes (protected!)
+# Documents Routes
 # -------------------------
-
 @app.get("/notes")
-def list_docs(user=Depends(get_current_user)):
-    with get_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, title, updated_at FROM documents WHERE owner_id = ? ORDER BY id DESC",
-            (user["id"],)
-        ).fetchall()
-    return [dict(r) for r in rows]
-
+async def list_docs(user=Depends(get_current_user)):
+    rows = await prisma.documents.find_many(
+        where={"owner_id": user["id"]},
+        order={"id": "desc"},
+        select={"id": True, "title": True, "updated_at": True},
+    )
+    return [r.model_dump() for r in rows]
 
 @app.post("/notes")
-def create_doc(data: DocCreate, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        cur = conn.execute(
-            "INSERT INTO documents (owner_id, title, content) VALUES (?, ?, '')",
-            (user["id"], data.title)
-        )
-        conn.commit()
-        doc_id = cur.lastrowid
-    return {"id": doc_id, "status": "created"}
+async def create_doc(data: DocCreate, user=Depends(get_current_user)):
+    doc = await prisma.documents.create(
+        data={"owner_id": user["id"], "title": data.title, "content": ""}
+    )
+    return {"id": doc.id, "status": "created"}
 
 @app.get("/notes/{doc_id}")
-def get_doc(doc_id: int, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        row = conn.execute(
-            "SELECT id, title, content, updated_at FROM documents WHERE id = ? AND owner_id = ?",
-            (doc_id, user["id"])
-        ).fetchone()
-
+async def get_doc(doc_id: int, user=Depends(get_current_user)):
+    row = await prisma.documents.find_first(
+        where={"id": doc_id, "owner_id": user["id"]}
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Document not found")
-    return dict(row)
+    return row.model_dump()
 
 @app.put("/notes/{doc_id}")
-def update_doc(doc_id: int, data: DocUpdate, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        cur = conn.execute(
-            """
-            UPDATE documents
-            SET title = ?, content = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ? AND owner_id = ?
-            """,
-            (data.title, data.content, doc_id, user["id"])
-        )
-        conn.commit()
-
-    if cur.rowcount == 0:
+async def update_doc(doc_id: int, data: DocUpdate, user=Depends(get_current_user)):
+    row = await prisma.documents.find_first(
+        where={"id": doc_id, "owner_id": user["id"]}
+    )
+    if not row:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    await prisma.documents.update(
+        where={"id": doc_id},
+        data={"title": data.title, "content": data.content},
+    )
     return {"status": "updated"}
 
 @app.delete("/notes/{doc_id}")
-def delete_doc(doc_id: int, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        cur = conn.execute(
-            "DELETE FROM documents WHERE id = ? AND owner_id = ?",
-            (doc_id, user["id"])
-        )
-        conn.commit()
-
-    if cur.rowcount == 0:
+async def delete_doc(doc_id: int, user=Depends(get_current_user)):
+    row = await prisma.documents.find_first(
+        where={"id": doc_id, "owner_id": user["id"]}
+    )
+    if not row:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    await prisma.documents.delete(where={"id": doc_id})
     return {"status": "deleted"}
 
 # -------------------------
 # Friend Management Routes
 # -------------------------
-
 @app.post("/friends/request")
-def send_friend_request(data: FriendRequestIn, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        receiver = conn.execute(
-            "SELECT id FROM accounts WHERE username = ?",
-            (data.receiver_username,)
-        ).fetchone()
+async def send_friend_request(data: FriendRequestIn, user=Depends(get_current_user)):
+    receiver = await prisma.accounts.find_unique(where={"username": data.receiver_username})
+    if not receiver:
+        raise HTTPException(status_code=404, detail="User not found")
 
-        if not receiver:
-            raise HTTPException(status_code=404, detail="User not found")
+    if receiver.id == user["id"]:
+        raise HTTPException(status_code=400, detail="Cannot add yourself")
 
-        if receiver["id"] == user["id"]:
-            raise HTTPException(status_code=400, detail="Cannot add yourself")
+    # composite unique (sender_id, receiver_id)
+    existing = await prisma.friend_requests.find_unique(
+        where={"sender_id_receiver_id": {"sender_id": user["id"], "receiver_id": receiver.id}}
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail="Request already exists")
 
-        existing = conn.execute(
-            "SELECT id FROM friend_requests WHERE sender_id = ? AND receiver_id = ?",
-            (user["id"], receiver["id"])
-        ).fetchone()
+    fr = await prisma.friend_requests.create(
+        data={"sender_id": user["id"], "receiver_id": receiver.id, "status": "pending"}
+    )
 
-        if existing:
-            raise HTTPException(status_code=400, detail="Request already exists")
-
-        conn.execute(
-            "INSERT INTO friend_requests (sender_id, receiver_id, status) VALUES (?, ?, 'pending')",
-            (user["id"], receiver["id"])
-        )
-        conn.commit()
+    # Live WS ping an Empfänger (wenn online)
+    await manager.send_personal_message(
+        receiver.id,
+        {
+            "type": "friend_request:new",
+            "request": {
+                "id": fr.id,
+                "sender_username": user["username"],
+                "created_at": fr.created_at.isoformat() if fr.created_at else datetime.utcnow().isoformat(),
+            }
+        }
+    )
 
     return {"status": "request_sent"}
 
 @app.get("/friends/requests")
-def get_friend_requests(user=Depends(get_current_user)):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT fr.id, a.id as sender_id, a.username as sender_username, fr.created_at, fr.status
-            FROM friend_requests fr
-            JOIN accounts a ON fr.sender_id = a.id
-            WHERE fr.receiver_id = ? AND fr.status = 'pending'
-            ORDER BY fr.created_at DESC
-            """,
-            (user["id"],)
-        ).fetchall()
-    return [dict(r) for r in rows]
+async def get_friend_requests(user=Depends(get_current_user)):
+    rows = await prisma.friend_requests.find_many(
+        where={"receiver_id": user["id"], "status": "pending"},
+        order={"created_at": "desc"},
+        include={"sender": True},
+    )
+    return [{
+        "id": r.id,
+        "sender_id": r.sender_id,
+        "sender_username": r.sender.username,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "status": r.status,
+    } for r in rows]
 
 @app.post("/friends/request/{request_id}/accept")
-def accept_friend_request(request_id: int, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        req = conn.execute(
-            "SELECT sender_id, receiver_id FROM friend_requests WHERE id = ? AND receiver_id = ?",
-            (request_id, user["id"])
-        ).fetchone()
+async def accept_friend_request(request_id: int, user=Depends(get_current_user)):
+    req = await prisma.friend_requests.find_first(
+        where={"id": request_id, "receiver_id": user["id"], "status": "pending"}
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
 
-        if not req:
-            raise HTTPException(status_code=404, detail="Request not found")
+    async with prisma.tx() as tx:
+        await tx.friend_requests.update(where={"id": request_id}, data={"status": "accepted"})
+        await tx.friendships.create(data={"user_id": req.receiver_id, "friend_id": req.sender_id})
+        await tx.friendships.create(data={"user_id": req.sender_id, "friend_id": req.receiver_id})
 
-        conn.execute(
-            "UPDATE friend_requests SET status = 'accepted' WHERE id = ?",
-            (request_id,)
-        )
-        conn.execute(
-            "INSERT INTO friendships (user_id, friend_id) VALUES (?, ?)",
-            (req["receiver_id"], req["sender_id"])
-        )
-        conn.execute(
-            "INSERT INTO friendships (user_id, friend_id) VALUES (?, ?)",
-            (req["sender_id"], req["receiver_id"])
-        )
-        conn.commit()
-
+    await manager.send_personal_message(
+        req.sender_id,
+        {
+            "type": "friend_request:accepted",
+            "friend": {"id": user["id"], "username": user["username"]}
+        }
+    )
     return {"status": "accepted"}
 
 @app.post("/friends/request/{request_id}/decline")
-def decline_friend_request(request_id: int, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        cur = conn.execute(
-            "UPDATE friend_requests SET status = 'declined' WHERE id = ? AND receiver_id = ?",
-            (request_id, user["id"])
-        )
-        conn.commit()
+async def decline_friend_request(request_id: int, user=Depends(get_current_user)):
+    req = await prisma.friend_requests.find_first(
+        where={"id": request_id, "receiver_id": user["id"], "status": "pending"}
+    )
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
 
-        if cur.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Request not found")
-
+    await prisma.friend_requests.update(where={"id": request_id}, data={"status": "declined"})
     return {"status": "declined"}
 
 @app.get("/friends")
-def get_friends(user=Depends(get_current_user)):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT a.id, a.username, f.created_at
-            FROM friendships f
-            JOIN accounts a ON f.friend_id = a.id
-            WHERE f.user_id = ?
-            ORDER BY f.created_at DESC
-            """,
-            (user["id"],)
-        ).fetchall()
-    return [dict(r) for r in rows]
+async def get_friends(user=Depends(get_current_user)):
+    rows = await prisma.friendships.find_many(
+        where={"user_id": user["id"]},
+        order={"created_at": "desc"},
+        include={"friend": True},
+    )
+    return [{
+        "id": r.friend.id,
+        "username": r.friend.username,
+        "created_at": r.created_at.isoformat() if r.created_at else None
+    } for r in rows]
 
+# -------------------------
+# Messages Routes
+# -------------------------
 @app.get("/messages/{friend_id}")
-def get_messages(friend_id: int, limit: int = 50, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, sender_id, receiver_id, content, created_at, read_at
-            FROM messages
-            WHERE (sender_id = ? AND receiver_id = ?) OR (sender_id = ? AND receiver_id = ?)
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (user["id"], friend_id, friend_id, user["id"], limit)
-        ).fetchall()
-    return [dict(r) for r in rows]
+async def get_messages(friend_id: int, limit: int = 50, user=Depends(get_current_user)):
+    rows = await prisma.messages.find_many(
+        where={
+            "OR": [
+                {"sender_id": user["id"], "receiver_id": friend_id},
+                {"sender_id": friend_id, "receiver_id": user["id"]},
+            ]
+        },
+        order={"created_at": "asc"},
+        take=limit,
+    )
+    return [r.model_dump() for r in rows]
 
 @app.post("/messages")
-def save_message(data: MessageIn, user=Depends(get_current_user)):
-    with get_connection() as conn:
-        conn.execute(
-            "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-            (user["id"], data.receiver_id, data.content)
-        )
-        conn.commit()
+async def save_message(data: MessageIn, user=Depends(get_current_user)):
+    await prisma.messages.create(
+        data={"sender_id": user["id"], "receiver_id": data.receiver_id, "content": data.content}
+    )
     return {"status": "sent"}
 
-# -------------------------
-# WebSocket for Real-Time Chat
-# -------------------------
+# Presence polling (dein Frontend nutzt das)
+@app.get("/users/{user_id}/online")
+def is_user_online(user_id: int):
+    return {"online": user_id in manager.active_connections}
 
+# -------------------------
+# WebSocket
+# -------------------------
 def get_token_from_query(query_params: str) -> str:
     try:
         params = dict(p.split("=") for p in query_params.split("&") if "=" in p)
         return params.get("token", "")
-    except:
+    except Exception:
         return ""
 
 @app.websocket("/ws")
@@ -363,7 +348,6 @@ async def websocket_endpoint(websocket: WebSocket):
     query_params = websocket.scope.get("query_string", b"").decode()
     token = get_token_from_query(query_params)
 
-    user = None
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
         user = {"id": int(payload["sub"]), "username": payload.get("username", "")}
@@ -380,59 +364,41 @@ async def websocket_endpoint(websocket: WebSocket):
 
             if msg_type == "message":
                 friend_id = data.get("friend_id")
-                content = data.get("content", "").strip()
-
+                content = (data.get("content") or "").strip()
                 if not content or not friend_id:
                     continue
 
-                with get_connection() as conn:
-                    conn.execute(
-                        "INSERT INTO messages (sender_id, receiver_id, content) VALUES (?, ?, ?)",
-                        (user["id"], friend_id, content)
-                    )
-                    conn.commit()
+                # speichern in Postgres via Prisma
+                await prisma.messages.create(
+                    data={"sender_id": user["id"], "receiver_id": int(friend_id), "content": content}
+                )
 
-                message_obj = {
-                    "type": "message",
-                    "from": user["username"],
-                    "from_id": user["id"],
-                    "content": content,
-                    "friend_id": friend_id,
-                    "timestamp": datetime.utcnow().isoformat()
-                }
-
-                await manager.broadcast_to_friend(user["id"], friend_id, message_obj)
+                await manager.send_to_friend(
+                    int(friend_id),
+                    {
+                        "type": "message",
+                        "from": user["username"],
+                        "from_id": user["id"],
+                        "content": content,
+                        "friend_id": int(friend_id),
+                        "timestamp": datetime.utcnow().isoformat(),
+                    }
+                )
 
             elif msg_type == "typing":
                 friend_id = data.get("friend_id")
-                is_typing = data.get("is_typing", False)
+                is_typing = bool(data.get("is_typing", False))
 
                 if is_typing:
                     manager.user_typing.add(user["id"])
                 else:
                     manager.user_typing.discard(user["id"])
 
-                typing_obj = {
-                    "type": "typing",
-                    "from_id": user["id"],
-                    "is_typing": is_typing
-                }
-                await manager.broadcast_to_friend(user["id"], friend_id, typing_obj)
-
-            elif msg_type == "online":
-                online_obj = {
-                    "type": "online",
-                    "user_id": user["id"],
-                    "username": user["username"]
-                }
-                for connection_user_id in list(manager.active_connections.keys()):
-                    await manager.send_personal_message(connection_user_id, online_obj)
+                if friend_id:
+                    await manager.send_to_friend(
+                        int(friend_id),
+                        {"type": "typing", "from_id": user["id"], "is_typing": is_typing}
+                    )
 
     except WebSocketDisconnect:
         manager.disconnect(user["id"])
-        offline_obj = {
-            "type": "offline",
-            "user_id": user["id"]
-        }
-        for connection_user_id in list(manager.active_connections.keys()):
-            await manager.send_personal_message(connection_user_id, offline_obj)

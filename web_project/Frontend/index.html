@@ -79,7 +79,7 @@
           <div class="sidebar-head">
             <h2>Anfragen</h2>
           </div>
-          <div id="requestsIndicator" style="display:none;" class="sidebar-item">
+          <div id="requestsIndicator" style="display:none;" class="sidebar-item" onclick="showTab('requests')">
             <div class="sidebar-item-name">📬 <span id="requestCount">0</span> neue</div>
           </div>
           <div id="noRequests" class="sidebar-item" style="background: transparent; border: none; cursor: default; color: var(--text-muted); font-size: 12px;">
@@ -108,16 +108,6 @@
           </div>
         </section>
 
-        <!-- FREUNDE TAB: Liste -->
-        <section id="tab-friends-list" style="display:none;">
-          <div class="panel-head">
-            <h2 class="panel-title" id="friendTitle">Freunde</h2>
-          </div>
-          <div class="panel-content">
-            <div id="friendsList2" class="sidebar-list"></div>
-          </div>
-        </section>
-
         <!-- REQUESTS TAB: Pending Requests -->
         <section id="tab-requests" style="display:none;">
           <div class="panel-head">
@@ -140,11 +130,15 @@
               <span id="chatWithUser">Wähle einen Freund</span>
             </h2>
           </div>
-          <div id="noChatSelected" class="empty-state" style="flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center;">
-            <div class="empty-state-icon">💬</div>
-            <p>Wähle einen Freund aus, um zu chatten</p>
+          <div id="noChatSelected" class="empty-state"
+          style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;">
+          <div class="empty-state-icon">👋</div>
+            <p style="max-width:320px;text-align:center;">
+              Wähle links einen Freund aus<br>
+              oder füge einen neuen hinzu, um zu chatten
+            </p>
           </div>
-          <div id="chatWrapper" style="display:none; flex: 1; display: flex; flex-direction: column;">
+          <div id="chatWrapper" style="display:none; flex: 1; flex-direction: column;">
             <div class="chat-messages" id="chatMessages"></div>
             <div id="typingIndicator" class="typing-indicator" style="padding: 0 20px; display:none;"></div>
             <div class="chat-input-area">
@@ -161,5 +155,6 @@
   </div>
 
   <script src="script_friend_system.js"></script>
+  <script src="ui_modern.js"></script>
 </body>
 </html>

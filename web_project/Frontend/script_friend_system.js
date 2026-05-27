@@ -1,15 +1,12 @@
-const API_BASE = (() => {
-  const host = window.location.hostname;
-  const port = "8000";
-  return `http://${host}:${port}`;
-})();
+const API_BASE = "https://705rmzkj-8000.euw.devtunnels.ms";
 
 let token = localStorage.getItem("token") || null;
 let currentUser = null;
 let currentChatFriend = null;
 let ws = null;
-let onlineFriends = new Set();
 let typingUsers = new Set();
+let onlineCheckInterval = null;
+
 
 // ---------- Helpers ----------
 function authHeaders(extra = {}) {
@@ -44,16 +41,28 @@ function formatTime(isoString) {
 
 // ---------- Tabs ----------
 function showTab(which) {
-  document.getElementById("tabLogin")?.classList.toggle("active", which === "login");
-  document.getElementById("tabRegister")?.classList.toggle("active", which === "register");
+  // AUTH
+  document.getElementById("loginView").style.display =
+    which === "login" ? "block" : "none";
+  document.getElementById("registerView").style.display =
+    which === "register" ? "block" : "none";
 
-  document.getElementById("loginView").style.display = which === "login" ? "block" : "none";
-  document.getElementById("registerView").style.display = which === "register" ? "block" : "none";
+  // MAIN PANEL (alles aus)
+  document.getElementById("tab-friends-search").style.display = "none";
+  document.getElementById("tab-requests").style.display = "none";
+  document.getElementById("tab-chat").style.display = "none";
 
-  document.getElementById("tab-friends-search").style.display = which === "friends-search" ? "block" : "none";
-  document.getElementById("tab-friends-list").style.display = which === "friends-list" ? "block" : "none";
-  document.getElementById("tab-requests").style.display = which === "requests" ? "block" : "none";
-  document.getElementById("tab-chat").style.display = which === "chat" ? "flex" : "none";
+  // MAIN PANEL (gezielt an)
+  if (which === "friends-search") {
+    document.getElementById("tab-friends-search").style.display = "block";
+  }
+  else if (which === "requests") {
+    document.getElementById("tab-requests").style.display = "block";
+  }
+  else {
+    // default = chat
+    document.getElementById("tab-chat").style.display = "flex";
+  }
 }
 
 // ---------- Auth ----------
@@ -118,6 +127,11 @@ function logout() {
   showTab("login");
   document.getElementById("loginUser").value = "";
   document.getElementById("loginPass").value = "";
+
+  if (onlineCheckInterval) {
+  clearInterval(onlineCheckInterval);
+  onlineCheckInterval = null;
+  }
 }
 
 async function enterApp() {
@@ -139,21 +153,19 @@ async function enterApp() {
   connectWebSocket();
   await loadFriends();
   await loadFriendRequests();
-  showTab("friends-list");
+  showTab("chat");
 }
 
 // ---------- WebSocket ----------
 function connectWebSocket() {
   if (ws) return;
   
-  const wsBase = API_BASE.replace("http", "ws");
+  const wsBase = API_BASE.replace(/^http/, "ws"); // https->wss, http->ws
   const wsUrl = `${wsBase}/ws?token=${token}`;
-  
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
     console.log("✅ WebSocket connected");
-    ws.send(JSON.stringify({ type: "online" }));
   };
 
   ws.onmessage = (event) => {
@@ -174,20 +186,23 @@ function connectWebSocket() {
           document.getElementById("typingIndicator").style.display = "none";
         }
       }
-    } else if (data.type === "online") {
-      onlineFriends.add(data.user_id);
-      updateFriendsOnlineStatus();
-    } else if (data.type === "offline") {
-      onlineFriends.delete(data.user_id);
-      updateFriendsOnlineStatus();
     }
+    
+    // ✅ HIER NUR ERGÄNZEN
+    else if (data.type === "friend_request:new") {
+    addIncomingRequest(data.request);
+    }
+    else if (data.type === "friend_request:accepted") {
+    loadFriends(); // oder friendsCache pushen
+    }
+
   };
 
   ws.onerror = (err) => console.error("WebSocket error:", err);
   ws.onclose = () => {
     console.log("❌ WebSocket disconnected");
     ws = null;
-    setTimeout(connectWebSocket, 3000);
+    setTimeout(connectWebSocket, 10000);
   };
 }
 
@@ -204,52 +219,37 @@ async function loadFriends() {
 }
 
 function updateFriendsList(friends) {
-  const list1 = document.getElementById("friendsList");
-  const list2 = document.getElementById("friendsList2");
-  
-  list1.innerHTML = "";
-  list2.innerHTML = "";
+  const list = document.getElementById("friendsList");
+  if (!list) return;
+
+  list.innerHTML = "";
 
   if (friends.length === 0) {
-    list1.innerHTML = `<div class="sidebar-item" style="background: transparent; border: none; cursor: default; color: var(--text-muted); font-size: 12px;">Keine Freunde</div>`;
-    list2.innerHTML = `<div class="empty-state"><p>Du hast noch keine Freunde. Suche nach neuen!</p></div>`;
+    list.innerHTML = `
+      <div class="sidebar-item"
+        style="background:transparent;border:none;color:var(--text-muted);font-size:12px;">
+        Keine Freunde
+      </div>`;
     return;
   }
 
   friends.forEach(friend => {
-    const isOnline = onlineFriends.has(friend.id);
-    
-    const item1 = document.createElement("button");
-    item1.type = "button";
-    item1.className = "sidebar-item" + (currentChatFriend?.id === friend.id ? " active" : "");
-    item1.innerHTML = `
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className =
+      "sidebar-item" + (currentChatFriend?.id === friend.id ? " active" : "");
+
+    item.innerHTML = `
       <div class="sidebar-item-name">
-        ${isOnline ? '<span class="status-online"></span>' : '<span class="status-offline"></span>'}
         ${escapeHtml(friend.username)}
       </div>
-      <div class="sidebar-item-status">${isOnline ? "Online" : "Offline"}</div>
     `;
-    item1.onclick = () => openChat(friend);
-    list1.appendChild(item1);
 
-    const item2 = document.createElement("button");
-    item2.type = "button";
-    item2.className = "sidebar-item" + (currentChatFriend?.id === friend.id ? " active" : "");
-    item2.textContent = friend.username;
-    item2.onclick = () => openChat(friend);
-    list2.appendChild(item2);
+    item.onclick = () => openChat(friend);
+    list.appendChild(item);
   });
 }
 
-function updateFriendsOnlineStatus() {
-  const friendsList = document.getElementById("friendsList");
-  const items = friendsList.querySelectorAll(".sidebar-item");
-  items.forEach((item) => item.classList.remove("active"));
-  if (currentChatFriend) {
-    const active = Array.from(items).find(item => item.textContent.includes(currentChatFriend.username));
-    if (active) active.classList.add("active");
-  }
-}
 
 async function sendFriendRequest() {
   const username = document.getElementById("searchUsername").value.trim();
@@ -321,6 +321,29 @@ function updateRequestsList(requests) {
     container.appendChild(item);
   });
 }
+function addIncomingRequest(req) {
+  const container = document.getElementById("requestsContainer");
+
+  const item = document.createElement("div");
+  item.className = "request-item";
+  item.innerHTML = `
+    <div class="request-info">
+      <div class="request-username">${escapeHtml(req.sender_username)}</div>
+      <div class="request-time">gerade eben</div>
+    </div>
+    <div class="request-actions">
+      <button class="btn primary btn-small" onclick="acceptRequest(${req.id})">✓</button>
+      <button class="btn danger btn-small" onclick="declineRequest(${req.id})">✕</button>
+    </div>
+  `;
+
+  container.prepend(item);
+
+  document.getElementById("requestsIndicator").style.display = "block";
+  document.getElementById("requestCount").textContent =
+    Number(document.getElementById("requestCount").textContent) + 1;
+}
+
 
 async function acceptRequest(reqId) {
   const res = await fetch(`${API_BASE}/friends/request/${reqId}/accept`, {
@@ -345,15 +368,38 @@ async function declineRequest(reqId) {
   }
 }
 
+// ---------- Polling Funktion ----------
+async function checkChatUserOnline() {
+  if (!currentChatFriend) return;
+
+  try {
+    const res = await fetch(
+      `${API_BASE}/users/${currentChatFriend.id}/online`,
+      { headers: authHeaders() }
+    );
+
+    if (!res.ok) return;
+
+    const data = await res.json();
+    document.getElementById("chatUserStatus").style.display =
+      data.online ? "inline-block" : "none";
+  } catch (e) {
+    console.warn("Online check failed");
+  }
+}
 // ---------- Chat ----------
 async function openChat(friend) {
+  if (!friend) return;
+
   currentChatFriend = friend;
+
+  // ✅ Welcome aus
   document.getElementById("noChatSelected").style.display = "none";
+
+  // ✅ Chat UI an
   document.getElementById("chatWrapper").style.display = "flex";
+
   document.getElementById("chatWithUser").textContent = friend.username;
-  
-  const isOnline = onlineFriends.has(friend.id);
-  document.getElementById("chatUserStatus").style.display = isOnline ? "inline-block" : "none";
 
   document.getElementById("chatMessages").innerHTML = "";
   document.getElementById("chatInput").value = "";
@@ -375,8 +421,17 @@ async function openChat(friend) {
     }, 50);
   }
 
-  updateFriendsOnlineStatus();
   showTab("chat");
+  // ✅ altes Polling stoppen
+  if (onlineCheckInterval) {
+    clearInterval(onlineCheckInterval);
+  }
+
+  // ✅ sofort prüfen
+  checkChatUserOnline();
+
+  // ✅ alle 5 Sekunden prüfen
+  onlineCheckInterval = setInterval(checkChatUserOnline, 5000);
 }
 
 function addMessageToChat(from, content, isOther, timestamp) {
@@ -438,6 +493,9 @@ showTab("login");
 
 if (token) {
   enterApp();
+  document.getElementById("chatWrapper").style.display = "none";
+  document.getElementById("noChatSelected").style.display = "flex";
+  showTab("chat");
 }
 
 // Touch support

@@ -1,9 +1,9 @@
 ## ▶ Backend starten (Postgres + Prisma)
-cd Backend
 .venv\Scripts\activate
+cd Backend
 python -m prisma generate
 python -m prisma db push
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --host 0.0.0.0 --port 8000
 
 ## Postgres + Volume löschen (im Projektroot):
 docker compose down -v
@@ -27,6 +27,20 @@ function connectWebSocket() {
   if (ws) return;
 
   const wsBase = API_BASE.replace("http", "ws");
+  const wsUrl = `${wsBase}/ws?token=${token}`;
+
+  ws = new WebSocket(wsUrl);
+  ...
+}
+
+## port forwarding
+function connectWebSocket() {
+  if (!token) return;
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+
+  clearReconnectTimer();
+
+  const wsBase = API_BASE.replace(/^http/, "ws"); // https -> wss, http -> ws
   const wsUrl = `${wsBase}/ws?token=${token}`;
 
   ws = new WebSocket(wsUrl);

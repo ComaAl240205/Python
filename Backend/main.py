@@ -1,14 +1,15 @@
 import os
+import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, Set
+from urllib.parse import parse_qs
 
+import bcrypt
 from fastapi import FastAPI, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
-
 from jose import jwt, JWTError
-from passlib.hash import bcrypt_sha256
 
 from prisma import Prisma
 
@@ -27,16 +28,15 @@ async def shutdown():
     await prisma.disconnect()
 
 # -------------------------
-# CORS
+# CORS (Performance: Preflight-Cache)
 # -------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8001",
-        "*"
-    ],
+    allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    max_age=86400,  # ✅ Browser cached OPTIONS (Preflight) bis zu 24h
 )
 
 # -------------------------
@@ -88,12 +88,26 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)):
     if creds is None or not creds.credentials:
         raise HTTPException(status_code=401, detail="Missing Authorization Bearer token")
 
-    token = creds.credentials
     try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALG])
         return {"id": int(payload["sub"]), "username": payload.get("username", "")}
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+# -------------------------
+# Password Hashing (Performance + Stabilität)
+# - passlib/bcrypt_sha256 raus (war bei dir langsam + versionsensitiv)
+# -------------------------
+def hash_password(password: str) -> str:
+    # rounds=12 ist ein guter Standard (sicher + nicht zu lahm)
+    salt = bcrypt.gensalt(rounds=12)
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+
+def verify_password(password: str, password_hash: str) -> bool:
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except Exception:
+        return False
 
 # -------------------------
 # Schemas
@@ -125,15 +139,17 @@ class MessageIn(BaseModel):
 # -------------------------
 @app.post("/register")
 async def register(data: RegisterIn):
-    pw_hash = bcrypt_sha256.hash(data.password)
+    pw_hash = hash_password(data.password)
 
-    existing = await prisma.accounts.find_unique(where={"username": data.username})
-    if existing:
+    # Performance: 1 DB-Call statt (find_unique + create)
+    try:
+        await prisma.accounts.create(
+            data={"username": data.username, "password_hash": pw_hash}
+        )
+    except Exception:
+        # unique violation -> username existiert
         raise HTTPException(status_code=400, detail="Username already exists")
 
-    await prisma.accounts.create(
-        data={"username": data.username, "password_hash": pw_hash}
-    )
     return {"status": "registered"}
 
 @app.post("/login")
@@ -142,7 +158,7 @@ async def login(data: LoginIn):
     if not row:
         raise HTTPException(status_code=401, detail="Invalid login")
 
-    if not bcrypt_sha256.verify(data.password, row.password_hash):
+    if not verify_password(data.password, row.password_hash):
         raise HTTPException(status_code=401, detail="Invalid login")
 
     token = create_access_token(row.id, row.username)
@@ -217,7 +233,6 @@ async def send_friend_request(data: FriendRequestIn, user=Depends(get_current_us
     if receiver.id == user["id"]:
         raise HTTPException(status_code=400, detail="Cannot add yourself")
 
-    # composite unique (sender_id, receiver_id)
     existing = await prisma.friend_requests.find_unique(
         where={"sender_id_receiver_id": {"sender_id": user["id"], "receiver_id": receiver.id}}
     )
@@ -228,7 +243,6 @@ async def send_friend_request(data: FriendRequestIn, user=Depends(get_current_us
         data={"sender_id": user["id"], "receiver_id": receiver.id, "status": "pending"}
     )
 
-    # Live WS ping an Empfänger (wenn online)
     await manager.send_personal_message(
         receiver.id,
         {
@@ -328,7 +342,6 @@ async def save_message(data: MessageIn, user=Depends(get_current_user)):
     )
     return {"status": "sent"}
 
-# Presence polling (dein Frontend nutzt das)
 @app.get("/users/{user_id}/online")
 def is_user_online(user_id: int):
     return {"online": user_id in manager.active_connections}
@@ -337,9 +350,10 @@ def is_user_online(user_id: int):
 # WebSocket
 # -------------------------
 def get_token_from_query(query_params: str) -> str:
+    # robust & schnell (statt split("&") mit edge-cases)
     try:
-        params = dict(p.split("=") for p in query_params.split("&") if "=" in p)
-        return params.get("token", "")
+        qs = parse_qs(query_params)
+        return (qs.get("token", [""])[0]) or ""
     except Exception:
         return ""
 
@@ -368,19 +382,27 @@ async def websocket_endpoint(websocket: WebSocket):
                 if not content or not friend_id:
                     continue
 
-                # speichern in Postgres via Prisma
-                await prisma.messages.create(
-                    data={"sender_id": user["id"], "receiver_id": int(friend_id), "content": content}
+                friend_id_int = int(friend_id)
+
+                # ✅ Performance: DB write nicht blockierend (Chat wirkt sofort)
+                asyncio.create_task(
+                    prisma.messages.create(
+                        data={
+                            "sender_id": user["id"],
+                            "receiver_id": friend_id_int,
+                            "content": content
+                        }
+                    )
                 )
 
                 await manager.send_to_friend(
-                    int(friend_id),
+                    friend_id_int,
                     {
                         "type": "message",
                         "from": user["username"],
                         "from_id": user["id"],
                         "content": content,
-                        "friend_id": int(friend_id),
+                        "friend_id": friend_id_int,
                         "timestamp": datetime.utcnow().isoformat(),
                     }
                 )

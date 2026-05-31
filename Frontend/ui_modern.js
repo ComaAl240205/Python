@@ -1,32 +1,31 @@
 /* ===========================
-   ui_modern.js (v3)
-   Compatible mit neuer modularer App
-   - Smooth cursor spotlight
-   - Toast system
+   ui_modern.js (v4)
+   Server-Reactions compatible
+   - Cursor spotlight
+   - Toasts
    - Sidebar collapse
-   - Reactions für Chat Messages
-   - Kein Zugriff auf alte window.login/window.acceptRequest Funktionen
+   - Reaction picker dispatcht nur Event
+   - Keine lokalen Fake-Reactions mehr
    =========================== */
 
 (function () {
   "use strict";
 
-  /* ---------------------------
-     1) Cursor Spotlight smooth
-  --------------------------- */
-  let mx = 50;
-  let my = 20;
+  // ---------------------------
+  // Cursor Spotlight
+  // ---------------------------
   let raf = null;
 
   function updateSpotlight(x, y) {
-    mx = Math.max(0, Math.min(100, (x / window.innerWidth) * 100));
-    my = Math.max(0, Math.min(100, (y / window.innerHeight) * 100));
-
     if (raf) return;
 
     raf = requestAnimationFrame(() => {
+      const mx = Math.max(0, Math.min(100, (x / window.innerWidth) * 100));
+      const my = Math.max(0, Math.min(100, (y / window.innerHeight) * 100));
+
       document.documentElement.style.setProperty("--mx", `${mx}%`);
       document.documentElement.style.setProperty("--my", `${my}%`);
+
       raf = null;
     });
   }
@@ -42,9 +41,9 @@
   }, { passive: true });
 
 
-  /* ---------------------------
-     2) Toast system
-  --------------------------- */
+  // ---------------------------
+  // Toast system
+  // ---------------------------
   function safeText(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -100,9 +99,9 @@
   initToasts();
 
 
-  /* ---------------------------
-     3) Sidebar collapse
-  --------------------------- */
+  // ---------------------------
+  // Sidebar collapse
+  // ---------------------------
   function sectionKey(section, index) {
     const title = section.querySelector(".sidebar-head h2")?.textContent?.trim();
     return `connected_sidebar_collapse_${title || index}`;
@@ -139,15 +138,11 @@
   }
 
 
-  /* ---------------------------
-     4) Reactions
-  --------------------------- */
+  // ---------------------------
+  // Reaction Picker
+  // ---------------------------
   let pickerEl = null;
   let pressTimer = null;
-
-  // UI-only reactions bleiben nach render() erhalten,
-  // solange Inhalt + Zeit gleich bleiben.
-  const reactionStore = new Map();
 
   function closePicker() {
     if (pickerEl) pickerEl.remove();
@@ -156,55 +151,6 @@
 
   function getMessageEl(target) {
     return target.closest(".message");
-  }
-
-  function messageKey(messageEl) {
-    const content = messageEl.querySelector(".message-content")?.textContent?.trim() || "";
-    const time = messageEl.querySelector(".message-time")?.textContent?.trim() || "";
-    const side = messageEl.classList.contains("own") ? "own" : "other";
-    return `${side}|${time}|${content}`;
-  }
-
-  function renderReactionBar(messageEl) {
-    const key = messageKey(messageEl);
-    const reactions = reactionStore.get(key);
-
-    let oldBar = messageEl.querySelector(".reaction-bar");
-    if (oldBar) oldBar.remove();
-
-    if (!reactions || reactions.size === 0) return;
-
-    const bar = document.createElement("div");
-    bar.className = "reaction-bar";
-
-    reactions.forEach((count, emoji) => {
-      const pill = document.createElement("span");
-      pill.className = "reaction-pill";
-      pill.dataset.emoji = emoji;
-      pill.innerHTML = `<span>${emoji}</span><strong>${count}</strong>`;
-      bar.appendChild(pill);
-    });
-
-    messageEl.appendChild(bar);
-  }
-
-  function addReaction(messageEl, emoji) {
-    if (!messageEl) return;
-
-    const key = messageKey(messageEl);
-
-    if (!reactionStore.has(key)) {
-      reactionStore.set(key, new Map());
-    }
-
-    const reactions = reactionStore.get(key);
-    reactions.set(emoji, (reactions.get(emoji) || 0) + 1);
-
-    renderReactionBar(messageEl);
-  }
-
-  function restoreAllReactions() {
-    document.querySelectorAll(".message").forEach(renderReactionBar);
   }
 
   function openPickerAt(x, y, messageEl) {
@@ -219,12 +165,26 @@
       b.textContent = emoji;
 
       b.addEventListener("click", () => {
-        addReaction(messageEl, emoji);
-        closePicker();
+        const messageId = messageEl.dataset.messageId;
 
-        if (window.toast) {
-          window.toast("info", "Reaction", `Reagiert mit ${emoji}`);
+        console.log("ui reaction click", messageId, emoji);
+
+        if (!messageId || messageId === "undefined" || messageId === "null") {
+          if (window.toast) {
+            window.toast("warning", "Kurz warten", "Nachricht wird noch gespeichert.");
+          }
+          closePicker();
+          return;
         }
+
+        document.dispatchEvent(new CustomEvent("reaction:selected", {
+          detail: {
+            messageId,
+            emoji
+          }
+        }));
+
+        closePicker();
       });
 
       pickerEl.appendChild(b);
@@ -285,9 +245,9 @@
   }, { passive: true });
 
 
-  /* ---------------------------
-     5) Mutation observer für SPA renders
-  --------------------------- */
+  // ---------------------------
+  // SPA Mutation helper
+  // ---------------------------
   let mutationRaf = null;
 
   function onDomChanged() {
@@ -295,13 +255,11 @@
 
     mutationRaf = requestAnimationFrame(() => {
       setupSidebarCollapse();
-      restoreAllReactions();
       mutationRaf = null;
     });
   }
 
   setupSidebarCollapse();
-  restoreAllReactions();
 
   const observer = new MutationObserver(onDomChanged);
   observer.observe(document.body, {
@@ -310,9 +268,9 @@
   });
 
 
-  /* ---------------------------
-     6) Optional click feedback
-  --------------------------- */
+  // ---------------------------
+  // Optional click feedback
+  // ---------------------------
   document.addEventListener("click", (e) => {
     const actionEl = e.target.closest("[data-action]");
     if (!actionEl || !window.toast) return;

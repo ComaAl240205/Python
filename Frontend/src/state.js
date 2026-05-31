@@ -118,3 +118,51 @@ export function resetState() {
 
   localStorage.removeItem("token");
 }
+export function ackMessage(clientId, realId, timestamp) {
+  const msg = state.messages.find(m =>
+    String(m.client_id) === String(clientId) ||
+    String(m.id) === String(clientId)
+  );
+
+  if (!msg) return;
+
+  msg.id = realId;
+  msg.created_at = timestamp || msg.created_at;
+}
+
+export function upsertReaction(messageId, reaction, removed = false, userId = null) {
+  const msg = state.messages.find(m => String(m.id) === String(messageId));
+  if (!msg) return;
+
+  if (!Array.isArray(msg.reactions)) {
+    msg.reactions = [];
+  }
+
+  const reactionUserId = userId ?? reaction?.user_id;
+
+  if (!reactionUserId) return;
+
+  // ✅ gleiche Reaction nochmal geklickt => entfernen
+  if (removed) {
+    msg.reactions = msg.reactions.filter(
+      r => String(r.user_id) !== String(reactionUserId)
+    );
+    return;
+  }
+
+  const existing = msg.reactions.find(
+    r => String(r.user_id) === String(reactionUserId)
+  );
+
+  // ✅ vorhandene Reaction ersetzen
+  if (existing) {
+    existing.emoji = reaction.emoji;
+    existing.updated_at = reaction.updated_at || new Date().toISOString();
+  }
+
+  // ✅ neue Reaction hinzufügen
+  else {
+    msg.reactions.push(reaction);
+  }
+}
+``

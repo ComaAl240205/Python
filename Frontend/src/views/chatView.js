@@ -2,6 +2,17 @@
 
 import { escapeHtml, formatTime } from "../utils.js";
 
+function groupedReactions(reactions = []) {
+  const map = new Map();
+
+  reactions.forEach(r => {
+    if (!r || !r.emoji) return;
+    map.set(r.emoji, (map.get(r.emoji) || 0) + 1);
+  });
+
+  return [...map.entries()];
+}
+
 export function chatView(state) {
   const friend = state.currentChatFriend;
   const messages = state.messages || [];
@@ -38,12 +49,34 @@ export function chatView(state) {
                 ${
                   messages.map(msg => {
                     const own = msg.sender_id === state.currentUser.id;
+                    const groups = groupedReactions(msg.reactions || []);
 
                     return `
-                      <div class="message ${own ? "own" : "other"}">
+                      <div 
+                        class="message ${own ? "own" : "other"}"
+                        data-message-id="${escapeHtml(msg.id)}"
+                      >
                         <div class="message-content">
                           ${escapeHtml(msg.content)}
                         </div>
+
+                        ${
+                          groups.length > 0
+                            ? `
+                              <div class="reaction-bar">
+                                ${
+                                  groups.map(([emoji, count]) => `
+                                    <span class="reaction-pill">
+                                      <span>${emoji}</span>
+                                      <strong>${count}</strong>
+                                    </span>
+                                  `).join("")
+                                }
+                              </div>
+                            `
+                            : ""
+                        }
+
                         <div class="message-time">
                           ${formatTime(msg.created_at)}
                         </div>

@@ -1,10 +1,17 @@
 // src/ws.js
 
 import { API_BASE } from "./config.js";
-import { state, addMessage, setRequests } from "./state.js";
+import {
+  state,
+  addMessage,
+  setRequests,
+  ackMessage,
+  upsertReaction
+} from "./state.js";
 import { render } from "./app.js";
 import { loadFriends } from "./friends.js";
 import { scrollChatToBottom } from "./chat.js";
+import { createId } from "./utils.js";
 
 export function connectWebSocket() {
   if (!state.token) return;
@@ -34,27 +41,45 @@ export function connectWebSocket() {
     const data = JSON.parse(event.data);
 
     if (data.type === "message") {
-        // Wichtig: eigene WS-Messages ignorieren, sonst doppelt möglich
-        if (data.from_id === state.currentUser?.id) return;
+      if (data.from_id === state.currentUser?.id) return;
 
-        if (
-            state.currentChatFriend &&
-            (
-            data.from_id === state.currentChatFriend.id ||
-            data.friend_id === state.currentChatFriend.id
-            )
-        ) {
-            addMessage({
-                id: crypto.randomUUID(),
-                sender_id: data.from_id,
-                receiver_id: state.currentUser.id,
-                content: data.content,
-                created_at: data.timestamp
-            });
+      if (
+        state.currentChatFriend &&
+        (
+          data.from_id === state.currentChatFriend.id ||
+          data.friend_id === state.currentChatFriend.id
+        )
+      ) {
+        addMessage({
+          id: data.id || data.client_id || createId(),
+          sender_id: data.from_id,
+          receiver_id: state.currentUser.id,
+          content: data.content,
+          created_at: data.timestamp,
+          reactions: []
+        });
 
-            render();
-            scrollChatToBottom();
-        }
+        render();
+        scrollChatToBottom();
+      }
+    }
+
+    else if (data.type === "message:ack") {
+      ackMessage(data.client_id, data.id, data.timestamp);
+      render();
+      scrollChatToBottom();
+    }
+
+    else if (data.type === "reaction:update") {
+      upsertReaction(
+      data.message_id,
+      data.reaction,
+      data.removed,
+      data.user_id
+      );
+
+      render();
+      scrollChatToBottom();
     }
 
     else if (data.type === "typing") {
@@ -74,6 +99,7 @@ export function connectWebSocket() {
 
     else if (data.type === "friend_request:new") {
       const exists = state.requests.some(r => r.id === data.request.id);
+
       if (!exists) {
         setRequests([data.request, ...state.requests]);
         render();

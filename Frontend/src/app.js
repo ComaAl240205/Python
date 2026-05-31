@@ -13,7 +13,8 @@ import {
   openChat,
   sendMessage,
   handleChatInput,
-  handleChatKeydown
+  handleChatKeydown,
+  sendReaction
 } from "./chat.js";
 
 export function render() {
@@ -102,6 +103,16 @@ document.addEventListener("input", handleChatInput);
 document.addEventListener("keydown", handleChatKeydown);
 
 document.addEventListener("touchstart", function () {}, true);
+
+document.addEventListener("reaction:selected", (event) => {
+  const { messageId, emoji } = event.detail || {};
+
+  console.log("reaction:selected", messageId, emoji);
+
+  if (!messageId || !emoji) return;
+
+  sendReaction(messageId, emoji);
+});
 
 render();
 

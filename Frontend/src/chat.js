@@ -9,7 +9,7 @@ import {
 } from "./state.js";
 import { apiMessages, apiOnline } from "./api.js";
 import { render } from "./app.js";
-import { $ } from "./utils.js";
+import { $, createId } from "./utils.js";
 
 export async function openChat(friendId) {
   const friend = state.friends.find(f => String(f.id) === String(friendId));
@@ -45,7 +45,7 @@ export function sendMessage() {
     return;
   }
 
-  const clientId = crypto.randomUUID();
+  const clientId = createId();
   const now = new Date().toISOString();
 
   state.ws.send(JSON.stringify({
@@ -154,4 +154,27 @@ export function stopOnlinePolling() {
     clearInterval(state.onlineCheckInterval);
     state.onlineCheckInterval = null;
   }
+}
+export function sendReaction(messageId, emoji) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    console.warn("Reaction failed: WebSocket nicht verbunden");
+    return;
+  }
+
+  const realId = Number(messageId);
+
+  if (!Number.isFinite(realId)) {
+    if (window.toast) {
+      window.toast("warning", "Kurz warten", "Nachricht wird noch gespeichert.");
+    }
+    return;
+  }
+
+  console.log("sending reaction ws", realId, emoji);
+
+  state.ws.send(JSON.stringify({
+    type: "reaction",
+    message_id: realId,
+    emoji
+  }));
 }

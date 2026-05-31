@@ -1,5 +1,5 @@
 import os
-import asyncio
+import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, Set
 from urllib.parse import parse_qs
@@ -28,7 +28,7 @@ async def shutdown():
     await prisma.disconnect()
 
 # -------------------------
-# CORS (Performance: Preflight-Cache)
+# CORS
 # -------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -36,7 +36,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    max_age=86400,  # ✅ Browser cached OPTIONS (Preflight) bis zu 24h
+    max_age=86400,
 )
 
 # -------------------------
@@ -44,7 +44,7 @@ app.add_middleware(
 # -------------------------
 class ConnectionManager:
     def __init__(self):
-        # Mehrere Geräte/Tabs pro User erlauben
+        # user_id -> mehrere WebSockets, damit Handy + Laptop gleichzeitig gehen
         self.active_connections: Dict[int, Set[WebSocket]] = {}
         self.user_typing: Set[int] = set()
 
@@ -90,7 +90,7 @@ manager = ConnectionManager()
 # -------------------------
 JWT_SECRET = os.getenv("JWT_SECRET", "CHANGE_ME_SUPER_SECRET")
 JWT_ALG = "HS256"
-JWT_EXPIRE_MIN = 60 * 24  # 24h
+JWT_EXPIRE_MIN = 60 * 24
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -113,15 +113,31 @@ def get_current_user(creds: HTTPAuthorizationCredentials = Depends(bearer)):
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 # -------------------------
-# Password Hashing (Performance + Stabilität)
-# - passlib/bcrypt_sha256 raus (war bei dir langsam + versionsensitiv)
+# Password Hashing
 # -------------------------
+def _password_bytes(password: str) -> bytes:
+    """
+    bcrypt hat technisch ein 72-byte Limit.
+    Darum hashen wir das Passwort vorher mit SHA256.
+    Ergebnis ist immer 32 bytes und bcrypt meckert nicht.
+    """
+    return hashlib.sha256(password.encode("utf-8")).digest()
+
 def hash_password(password: str) -> str:
-    # rounds=12 ist ein guter Standard (sicher + nicht zu lahm)
     salt = bcrypt.gensalt(rounds=12)
-    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
+    return bcrypt.hashpw(_password_bytes(password), salt).decode("utf-8")
 
 def verify_password(password: str, password_hash: str) -> bool:
+    """
+    Erst neuer Weg mit SHA256+bcrypt.
+    Fallback: alter direkter bcrypt-Weg, falls du noch alte User hast.
+    """
+    try:
+        if bcrypt.checkpw(_password_bytes(password), password_hash.encode("utf-8")):
+            return True
+    except Exception:
+        pass
+
     try:
         return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
     except Exception:
@@ -159,13 +175,11 @@ class MessageIn(BaseModel):
 async def register(data: RegisterIn):
     pw_hash = hash_password(data.password)
 
-    # Performance: 1 DB-Call statt (find_unique + create)
     try:
         await prisma.accounts.create(
             data={"username": data.username, "password_hash": pw_hash}
         )
     except Exception:
-        # unique violation -> username existiert
         raise HTTPException(status_code=400, detail="Username already exists")
 
     return {"status": "registered"}
@@ -252,13 +266,22 @@ async def send_friend_request(data: FriendRequestIn, user=Depends(get_current_us
         raise HTTPException(status_code=400, detail="Cannot add yourself")
 
     existing = await prisma.friend_requests.find_unique(
-        where={"sender_id_receiver_id": {"sender_id": user["id"], "receiver_id": receiver.id}}
+        where={
+            "sender_id_receiver_id": {
+                "sender_id": user["id"],
+                "receiver_id": receiver.id
+            }
+        }
     )
     if existing:
         raise HTTPException(status_code=400, detail="Request already exists")
 
     fr = await prisma.friend_requests.create(
-        data={"sender_id": user["id"], "receiver_id": receiver.id, "status": "pending"}
+        data={
+            "sender_id": user["id"],
+            "receiver_id": receiver.id,
+            "status": "pending"
+        }
     )
 
     await manager.send_personal_message(
@@ -299,17 +322,30 @@ async def accept_friend_request(request_id: int, user=Depends(get_current_user))
         raise HTTPException(status_code=404, detail="Request not found")
 
     async with prisma.tx() as tx:
-        await tx.friend_requests.update(where={"id": request_id}, data={"status": "accepted"})
-        await tx.friendships.create(data={"user_id": req.receiver_id, "friend_id": req.sender_id})
-        await tx.friendships.create(data={"user_id": req.sender_id, "friend_id": req.receiver_id})
+        await tx.friend_requests.update(
+            where={"id": request_id},
+            data={"status": "accepted"}
+        )
+
+        await tx.friendships.create(
+            data={"user_id": req.receiver_id, "friend_id": req.sender_id}
+        )
+
+        await tx.friendships.create(
+            data={"user_id": req.sender_id, "friend_id": req.receiver_id}
+        )
 
     await manager.send_personal_message(
         req.sender_id,
         {
             "type": "friend_request:accepted",
-            "friend": {"id": user["id"], "username": user["username"]}
+            "friend": {
+                "id": user["id"],
+                "username": user["username"]
+            }
         }
     )
+
     return {"status": "accepted"}
 
 @app.post("/friends/request/{request_id}/decline")
@@ -320,7 +356,11 @@ async def decline_friend_request(request_id: int, user=Depends(get_current_user)
     if not req:
         raise HTTPException(status_code=404, detail="Request not found")
 
-    await prisma.friend_requests.update(where={"id": request_id}, data={"status": "declined"})
+    await prisma.friend_requests.update(
+        where={"id": request_id},
+        data={"status": "declined"}
+    )
+
     return {"status": "declined"}
 
 @app.get("/friends")
@@ -350,15 +390,25 @@ async def get_messages(friend_id: int, limit: int = 50, user=Depends(get_current
         },
         order={"created_at": "asc"},
         take=limit,
+        include={"reactions": True},
     )
     return [r.model_dump() for r in rows]
 
 @app.post("/messages")
 async def save_message(data: MessageIn, user=Depends(get_current_user)):
-    await prisma.messages.create(
-        data={"sender_id": user["id"], "receiver_id": data.receiver_id, "content": data.content}
+    saved = await prisma.messages.create(
+        data={
+            "sender_id": user["id"],
+            "receiver_id": data.receiver_id,
+            "content": data.content
+        }
     )
-    return {"status": "sent"}
+
+    return {
+        "status": "sent",
+        "id": saved.id,
+        "created_at": saved.created_at.isoformat() if saved.created_at else None
+    }
 
 @app.get("/users/{user_id}/online")
 def is_user_online(user_id: int):
@@ -368,7 +418,6 @@ def is_user_online(user_id: int):
 # WebSocket
 # -------------------------
 def get_token_from_query(query_params: str) -> str:
-    # robust & schnell (statt split("&") mit edge-cases)
     try:
         qs = parse_qs(query_params)
         return (qs.get("token", [""])[0]) or ""
@@ -382,7 +431,10 @@ async def websocket_endpoint(websocket: WebSocket):
 
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-        user = {"id": int(payload["sub"]), "username": payload.get("username", "")}
+        user = {
+            "id": int(payload["sub"]),
+            "username": payload.get("username", "")
+        }
     except JWTError:
         await websocket.close(code=401)
         return
@@ -404,12 +456,11 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 friend_id_int = int(friend_id)
 
-                # Erst speichern, dann mit echter DB-ID weiterleiten
                 saved = await prisma.messages.create(
-                data={
-                    "sender_id": user["id"],
-                    "receiver_id": friend_id_int,
-                    "content": content
+                    data={
+                        "sender_id": user["id"],
+                        "receiver_id": friend_id_int,
+                        "content": content
                     }
                 )
 
@@ -422,10 +473,25 @@ async def websocket_endpoint(websocket: WebSocket):
                     "receiver_id": friend_id_int,
                     "content": content,
                     "friend_id": friend_id_int,
-                    "timestamp": saved.created_at.isoformat() if saved.created_at else datetime.utcnow().isoformat()
+                    "timestamp": saved.created_at.isoformat()
+                        if saved.created_at else datetime.utcnow().isoformat()
                 }
 
-            await manager.send_to_friend(friend_id_int, message_obj)
+                # Nur an Empfänger senden.
+                # Sender zeigt Nachricht bereits optimistisch im Frontend.
+                await manager.send_to_friend(friend_id_int, message_obj)
+
+                # ACK an Sender: ersetzt client_id mit echter DB-ID
+                await manager.send_personal_message(
+                    user["id"],
+                    {
+                        "type": "message:ack",
+                        "client_id": client_id,
+                        "id": saved.id,
+                        "timestamp": saved.created_at.isoformat()
+                            if saved.created_at else datetime.utcnow().isoformat()
+                    }
+                )
 
             elif msg_type == "typing":
                 friend_id = data.get("friend_id")
@@ -439,8 +505,107 @@ async def websocket_endpoint(websocket: WebSocket):
                 if friend_id:
                     await manager.send_to_friend(
                         int(friend_id),
-                        {"type": "typing", "from_id": user["id"], "is_typing": is_typing}
+                        {
+                            "type": "typing",
+                            "from_id": user["id"],
+                            "is_typing": is_typing
+                        }
+                    )
+                    
+            elif msg_type == "reaction":
+                message_id = data.get("message_id")
+                emoji = (data.get("emoji") or "").strip()
+
+                allowed_emojis = {"❤️", "😂", "🔥", "👍", "😮", "🎉", "😢", "👀"}
+
+                if not message_id or emoji not in allowed_emojis:
+                    continue
+
+                message_id_int = int(message_id)
+
+                msg = await prisma.messages.find_first(
+                    where={
+                        "id": message_id_int,
+                        "OR": [
+                            {"sender_id": user["id"]},
+                            {"receiver_id": user["id"]},
+                        ]
+                    }
+                )
+
+                if not msg:
+                    continue
+
+                existing = await prisma.message_reactions.find_unique(
+                    where={
+                        "message_id_user_id": {
+                            "message_id": message_id_int,
+                            "user_id": user["id"]
+                        }
+                    }
+                )
+
+                removed = False
+                reaction_payload = None
+
+                # ✅ Gleiche Reaction nochmal geklickt => entfernen
+                if existing and existing.emoji == emoji:
+                    await prisma.message_reactions.delete(
+                        where={"id": existing.id}
+                    )
+                    removed = True
+
+                # ✅ Andere Reaction geklickt => ersetzen
+                elif existing:
+                    reaction = await prisma.message_reactions.update(
+                        where={"id": existing.id},
+                        data={"emoji": emoji}
                     )
 
+                    reaction_payload = {
+                        "id": reaction.id,
+                        "message_id": message_id_int,
+                        "user_id": user["id"],
+                        "emoji": emoji,
+                        "created_at": reaction.created_at.isoformat()
+                            if reaction.created_at else datetime.utcnow().isoformat(),
+                        "updated_at": reaction.updated_at.isoformat()
+                            if reaction.updated_at else datetime.utcnow().isoformat()
+                    }
+
+                # ✅ Noch keine Reaction => erstellen
+                else:
+                    reaction = await prisma.message_reactions.create(
+                        data={
+                            "message_id": message_id_int,
+                            "user_id": user["id"],
+                            "emoji": emoji
+                        }
+                    )
+
+                    reaction_payload = {
+                        "id": reaction.id,
+                        "message_id": message_id_int,
+                        "user_id": user["id"],
+                        "emoji": emoji,
+                        "created_at": reaction.created_at.isoformat()
+                            if reaction.created_at else datetime.utcnow().isoformat(),
+                        "updated_at": reaction.updated_at.isoformat()
+                            if reaction.updated_at else datetime.utcnow().isoformat()
+                    }
+
+                event = {
+                    "type": "reaction:update",
+                    "message_id": message_id_int,
+                    "user_id": user["id"],
+                    "removed": removed,
+                    "reaction": reaction_payload
+                }
+
+                await manager.send_personal_message(msg.sender_id, event)
+
+                if msg.receiver_id != msg.sender_id:
+                    await manager.send_personal_message(msg.receiver_id, event)
+
     except WebSocketDisconnect:
-    manager.disconnect(user["id"], websocket)
+        manager.disconnect(user["id"], websocket)

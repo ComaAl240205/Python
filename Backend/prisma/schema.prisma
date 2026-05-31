@@ -21,6 +21,7 @@ model accounts {
   friends_of    friendships[] @relation("fs_friend")
   sent_messages messages[] @relation("msg_sender")
   recv_messages messages[] @relation("msg_receiver")
+  message_reactions message_reactions[]
 }
 
 model documents {
@@ -77,4 +78,20 @@ model messages {
   @@index([receiver_id])
   @@index([sender_id])
   @@index([created_at])
+  reactions message_reactions[]
+}
+model message_reactions {
+  id         Int      @id @default(autoincrement())
+  message_id Int
+  user_id    Int
+  emoji      String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  message    messages @relation(fields: [message_id], references: [id])
+  user       accounts @relation(fields: [user_id], references: [id])
+
+  @@unique([message_id, user_id])
+  @@index([message_id])
+  @@index([user_id])
 }

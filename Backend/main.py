@@ -44,26 +44,44 @@ app.add_middleware(
 # -------------------------
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: Dict[int, WebSocket] = {}
+        # Mehrere Geräte/Tabs pro User erlauben
+        self.active_connections: Dict[int, Set[WebSocket]] = {}
         self.user_typing: Set[int] = set()
 
     async def connect(self, user_id: int, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections[user_id] = websocket
 
-    def disconnect(self, user_id: int):
-        self.active_connections.pop(user_id, None)
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = set()
+
+        self.active_connections[user_id].add(websocket)
+
+    def disconnect(self, user_id: int, websocket: WebSocket | None = None):
+        if user_id in self.active_connections:
+            if websocket:
+                self.active_connections[user_id].discard(websocket)
+            else:
+                self.active_connections[user_id].clear()
+
+            if not self.active_connections[user_id]:
+                self.active_connections.pop(user_id, None)
+
         self.user_typing.discard(user_id)
 
     async def send_personal_message(self, user_id: int, message: dict):
-        ws = self.active_connections.get(user_id)
-        if ws:
-            await ws.send_json(message)
+        sockets = list(self.active_connections.get(user_id, set()))
+
+        for ws in sockets:
+            try:
+                await ws.send_json(message)
+            except Exception:
+                self.disconnect(user_id, ws)
 
     async def send_to_friend(self, friend_id: int, message: dict):
-        ws = self.active_connections.get(friend_id)
-        if ws:
-            await ws.send_json(message)
+        await self.send_personal_message(friend_id, message)
+
+    def is_online(self, user_id: int) -> bool:
+        return user_id in self.active_connections and len(self.active_connections[user_id]) > 0
 
 manager = ConnectionManager()
 
@@ -344,7 +362,7 @@ async def save_message(data: MessageIn, user=Depends(get_current_user)):
 
 @app.get("/users/{user_id}/online")
 def is_user_online(user_id: int):
-    return {"online": user_id in manager.active_connections}
+    return {"online": manager.is_online(user_id)}
 
 # -------------------------
 # WebSocket
@@ -379,33 +397,35 @@ async def websocket_endpoint(websocket: WebSocket):
             if msg_type == "message":
                 friend_id = data.get("friend_id")
                 content = (data.get("content") or "").strip()
+                client_id = data.get("client_id")
+
                 if not content or not friend_id:
                     continue
 
                 friend_id_int = int(friend_id)
 
-                # ✅ Performance: DB write nicht blockierend (Chat wirkt sofort)
-                asyncio.create_task(
-                    prisma.messages.create(
-                        data={
-                            "sender_id": user["id"],
-                            "receiver_id": friend_id_int,
-                            "content": content
-                        }
-                    )
-                )
-
-                await manager.send_to_friend(
-                    friend_id_int,
-                    {
-                        "type": "message",
-                        "from": user["username"],
-                        "from_id": user["id"],
-                        "content": content,
-                        "friend_id": friend_id_int,
-                        "timestamp": datetime.utcnow().isoformat(),
+                # Erst speichern, dann mit echter DB-ID weiterleiten
+                saved = await prisma.messages.create(
+                data={
+                    "sender_id": user["id"],
+                    "receiver_id": friend_id_int,
+                    "content": content
                     }
                 )
+
+                message_obj = {
+                    "type": "message",
+                    "id": saved.id,
+                    "client_id": client_id,
+                    "from": user["username"],
+                    "from_id": user["id"],
+                    "receiver_id": friend_id_int,
+                    "content": content,
+                    "friend_id": friend_id_int,
+                    "timestamp": saved.created_at.isoformat() if saved.created_at else datetime.utcnow().isoformat()
+                }
+
+            await manager.send_to_friend(friend_id_int, message_obj)
 
             elif msg_type == "typing":
                 friend_id = data.get("friend_id")
@@ -423,4 +443,4 @@ async def websocket_endpoint(websocket: WebSocket):
                     )
 
     except WebSocketDisconnect:
-        manager.disconnect(user["id"])
+    manager.disconnect(user["id"], websocket)

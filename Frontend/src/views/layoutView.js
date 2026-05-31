@@ -1,8 +1,10 @@
 // src/views/layoutView.js
-// Grundlayout der App.
-// Phase 2: Auth oder eingeloggter Placeholder.
 
 import { authView } from "./authView.js";
+import { sidebarView } from "./sidebarView.js";
+import { chatView } from "./chatView.js";
+import { requestsView } from "./requestsView.js";
+import { addFriendView } from "./addFriendView.js";
 
 export function layoutView(state) {
   const loggedIn = !!state.currentUser;
@@ -10,7 +12,6 @@ export function layoutView(state) {
   return `
     <div class="container">
 
-      <!-- TOPBAR -->
       <header class="topbar">
         <div>
           <h1>Connected</h1>
@@ -24,16 +25,23 @@ export function layoutView(state) {
       </header>
 
       ${
-        loggedIn
-          ? `
-            <section class="card">
-              <h2 class="panel-title">✅ Eingeloggt</h2>
-              <p class="hint">
-                Login funktioniert. In Phase 3 bauen wir hier Sidebar, Freunde, Requests und Chat wieder ein.
-              </p>
+        !loggedIn
+          ? authView(state.view)
+          : `
+            <section class="app-layout" id="appView">
+              ${sidebarView(state)}
+
+              <main class="main-panel">
+                ${
+                  state.view === "addFriend"
+                    ? addFriendView(state)
+                    : state.view === "requests"
+                      ? requestsView(state)
+                      : chatView(state)
+                }
+              </main>
             </section>
           `
-          : authView(state.view)
       }
 
     </div>

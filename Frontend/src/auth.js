@@ -1,10 +1,12 @@
 // src/auth.js
-// Login, Register, Logout Logik.
 
 import { state, setToken, setUser, setView, resetState } from "./state.js";
-import { $, setText } from "./utils.js";
+import { $ } from "./utils.js";
 import { apiLogin, apiRegister, apiMe } from "./api.js";
 import { render } from "./app.js";
+import { loadFriends, loadFriendRequests } from "./friends.js";
+import { connectWebSocket, disconnectWebSocket } from "./ws.js";
+import { stopOnlinePolling } from "./chat.js";
 
 export async function register() {
   if (state.authBusy) return;
@@ -19,9 +21,7 @@ export async function register() {
   try {
     await apiRegister(username, password);
 
-    if (msg) {
-      msg.textContent = "✅ Account erstellt! Bitte einloggen.";
-    }
+    if (msg) msg.textContent = "✅ Account erstellt! Bitte einloggen.";
 
     setTimeout(() => {
       setView("login");
@@ -32,9 +32,7 @@ export async function register() {
     }, 600);
 
   } catch (err) {
-    if (msg) {
-      msg.textContent = `❌ ${err.detail || "Registrierung fehlgeschlagen"}`;
-    }
+    if (msg) msg.textContent = `❌ ${err.detail || "Registrierung fehlgeschlagen"}`;
   } finally {
     state.authBusy = false;
   }
@@ -52,28 +50,31 @@ export async function login() {
 
   try {
     const data = await apiLogin(username, password);
-
     setToken(data.access_token);
 
     const user = await apiMe();
     setUser(user);
 
-    // Nach Login gehen wir später in Phase 3 auf "chat".
-    // Für Phase 2 zeigen wir erstmal eingeloggten Zustand.
-    setView("chat");
+    await Promise.all([
+      loadFriends(false),
+      loadFriendRequests(false)
+    ]);
 
+    connectWebSocket();
+
+    setView("chat");
     render();
 
   } catch (err) {
-    if (msg) {
-      msg.textContent = `❌ ${err.detail || "Login fehlgeschlagen"}`;
-    }
+    if (msg) msg.textContent = `❌ ${err.detail || "Login fehlgeschlagen"}`;
   } finally {
     state.authBusy = false;
   }
 }
 
 export function logout() {
+  disconnectWebSocket();
+  stopOnlinePolling();
   resetState();
   render();
 }
@@ -84,6 +85,14 @@ export async function restoreSession() {
   try {
     const user = await apiMe();
     setUser(user);
+
+    await Promise.all([
+      loadFriends(false),
+      loadFriendRequests(false)
+    ]);
+
+    connectWebSocket();
+
     setView("chat");
   } catch {
     resetState();

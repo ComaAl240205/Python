@@ -1018,3 +1018,77 @@ body::after{
   from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ===== Chat scroll / mobile fixes ===== */
+
+.main-panel,
+.chat-container,
+#chatWrapper {
+  min-height: 0;
+}
+
+.chat-container {
+  overflow: hidden;
+}
+
+#chatWrapper {
+  min-height: 0;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* iPhone/Safari zoom fix: Inputs müssen min. 16px haben */
+input,
+textarea,
+select {
+  font-size: 16px;
+}
+
+/* Add-friend Button bisschen runter */
+.add-friend-btn {
+  margin-top: 10px;
+}
+
+/* Avatar mit 2 Buchstaben */
+.avatar {
+  width: 30px;
+  height: 30px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  font-size: 12px;
+  color: white;
+  background: linear-gradient(135deg, rgba(109,94,252,1), rgba(109,94,252,.65));
+  box-shadow: 0 12px 26px rgba(109,94,252,.22);
+  flex: 0 0 auto;
+}
+.main-panel,
+.chat-container,
+#chatWrapper {
+  min-height: 0;
+}
+  
+.chat-container {
+  overflow: hidden;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+input,
+textarea,
+select {
+  font-size: 16px;
+}

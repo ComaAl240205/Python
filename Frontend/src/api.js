@@ -1,5 +1,4 @@
 // src/api.js
-// Alle Backend-Requests an einem Ort.
 
 import { API_BASE } from "./config.js";
 import { state } from "./state.js";
@@ -24,14 +23,8 @@ export async function readError(res) {
   }
 }
 
-export async function apiRegister(username, password) {
-  const res = await fetch(`${API_BASE}/register`, {
-    method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json"
-    }),
-    body: JSON.stringify({ username, password })
-  });
+async function request(path, options = {}) {
+  const res = await fetch(`${API_BASE}${path}`, options);
 
   if (!res.ok) {
     throw await readError(res);
@@ -40,30 +33,73 @@ export async function apiRegister(username, password) {
   return await res.json();
 }
 
-export async function apiLogin(username, password) {
-  const res = await fetch(`${API_BASE}/login`, {
+// Auth
+export function apiRegister(username, password) {
+  return request("/register", {
     method: "POST",
-    headers: authHeaders({
-      "Content-Type": "application/json"
-    }),
+    headers: authHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify({ username, password })
   });
-
-  if (!res.ok) {
-    throw await readError(res);
-  }
-
-  return await res.json();
 }
 
-export async function apiMe() {
-  const res = await fetch(`${API_BASE}/me`, {
+export function apiLogin(username, password) {
+  return request("/login", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ username, password })
+  });
+}
+
+export function apiMe() {
+  return request("/me", {
     headers: authHeaders()
   });
+}
 
-  if (!res.ok) {
-    throw await readError(res);
-  }
+// Friends
+export function apiFriends() {
+  return request("/friends", {
+    headers: authHeaders()
+  });
+}
 
-  return await res.json();
+export function apiFriendRequests() {
+  return request("/friends/requests", {
+    headers: authHeaders()
+  });
+}
+
+export function apiSendFriendRequest(receiver_username) {
+  return request("/friends/request", {
+    method: "POST",
+    headers: authHeaders({ "Content-Type": "application/json" }),
+    body: JSON.stringify({ receiver_username })
+  });
+}
+
+export function apiAcceptRequest(id) {
+  return request(`/friends/request/${id}/accept`, {
+    method: "POST",
+    headers: authHeaders()
+  });
+}
+
+export function apiDeclineRequest(id) {
+  return request(`/friends/request/${id}/decline`, {
+    method: "POST",
+    headers: authHeaders()
+  });
+}
+
+// Chat
+export function apiMessages(friendId) {
+  return request(`/messages/${friendId}`, {
+    headers: authHeaders()
+  });
+}
+
+export function apiOnline(userId) {
+  return request(`/users/${userId}/online`, {
+    headers: authHeaders()
+  });
 }

@@ -1,10 +1,20 @@
 // src/app.js
-// Startpunkt der Frontend-App.
 
 import { state, setView } from "./state.js";
 import { $ } from "./utils.js";
 import { layoutView } from "./views/layoutView.js";
 import { login, register, logout, restoreSession } from "./auth.js";
+import {
+  sendFriendRequest,
+  acceptRequest,
+  declineRequest
+} from "./friends.js";
+import {
+  openChat,
+  sendMessage,
+  handleChatInput,
+  handleChatKeydown
+} from "./chat.js";
 
 export function render() {
   const app = $("app");
@@ -49,14 +59,51 @@ document.addEventListener("click", async (event) => {
     logout();
     return;
   }
+
+  if (action === "show-add-friend") {
+    setView("addFriend");
+    render();
+    return;
+  }
+
+  if (action === "show-requests") {
+    setView("requests");
+    render();
+    return;
+  }
+
+  if (action === "send-friend-request") {
+    await sendFriendRequest();
+    return;
+  }
+
+  if (action === "accept-request") {
+    await acceptRequest(actionEl.dataset.requestId);
+    return;
+  }
+
+  if (action === "decline-request") {
+    await declineRequest(actionEl.dataset.requestId);
+    return;
+  }
+
+  if (action === "open-chat") {
+    await openChat(actionEl.dataset.friendId);
+    return;
+  }
+
+  if (action === "send-message") {
+    sendMessage();
+    return;
+  }
 });
 
-// Touch support behalten
+document.addEventListener("input", handleChatInput);
+document.addEventListener("keydown", handleChatKeydown);
+
 document.addEventListener("touchstart", function () {}, true);
 
-// Start
 render();
 
-// Wenn Token vorhanden ist, Session wiederherstellen
 await restoreSession();
 render();
